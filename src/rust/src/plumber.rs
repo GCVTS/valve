@@ -27,6 +27,21 @@ pub struct Plumber {
     pub process: std::process::Child,
 }
 
+impl Drop for Plumber {
+    fn drop(&mut self) {
+        // Terminate and reap the spawned R worker whenever its `Plumber` is
+        // dropped. This is the single teardown point for the worker process and
+        // covers every removal path: pool eviction, pruning, resize/close, and
+        // dropping the pool itself on shutdown. deadpool only calls
+        // `Manager::detach` on *some* of those paths (notably not on
+        // `Pool::close`/`resize` or when the pool is dropped), so relying on it
+        // alone would orphan R processes.
+        let _ = self.process.kill();
+        // Reap so we don't leave a zombie (Unix) or a dangling handle.
+        let _ = self.process.wait();
+    }
+}
+
 // Plumber methods for spawning, checking alive status and killing
 impl Plumber {
     pub fn spawn(host: &str, filepath: &str) -> Self {
@@ -212,9 +227,10 @@ impl managed::Manager for PrManager {
         }
     }
 
-    fn detach(&self, obj: &mut Plumber) {
-        let _killed_process = obj.process.kill();
-    }
+    // No `detach` override: process teardown lives in `Drop for Plumber`, which
+    // runs on every path that removes a worker from the pool (including the ones
+    // deadpool never calls `detach` on, e.g. `Pool::close`/`resize` and dropping
+    // the pool on shutdown).
 }
 
 // spawn plumber

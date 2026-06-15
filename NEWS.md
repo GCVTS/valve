@@ -11,6 +11,10 @@
     of being handed back out. The pool self-heals after a worker dies.
   - Failing to acquire a worker from the pool now returns `502` rather than
     panicking the request handler.
+* Spawned plumber worker processes are no longer orphaned. Worker teardown now
+  lives in a `Drop` implementation, so the underlying R process is terminated on
+  every path that removes a worker — eviction, pruning, pool resize, and pool
+  shutdown — not only the few paths where `deadpool` calls `detach`.
 
 # valve 0.1.2.9000
 
