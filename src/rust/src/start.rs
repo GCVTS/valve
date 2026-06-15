@@ -8,6 +8,7 @@ use axum::{body::Body, extract::Extension, response::Redirect, routing::get};
 
 use std::time::Duration;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{net::TcpListener, sync::Arc};
 
 use deadpool::managed;
@@ -61,19 +62,25 @@ pub async fn valve_start(
         loop {
             tokio::time::sleep(interval).await;
 
-            let n = pool.status().size;
-
-            // if pool is greater than the minimum size, do a prune check
-            if n > n_min {
-                pool.retain(|pr, metrics| {
-                    let keep = metrics.last_used() < max_age;
-                    if !keep {
-                        println!("Killing plumber API at {}:{}", pr.host, pr.port);
-                    }
-
-                    keep
-                });
+            // Never prune below `n_min`: cap how many workers a single pass may
+            // remove so the pool can't drop under the configured minimum, even
+            // when several workers expire in the same pass.
+            let removable = pool.status().size.saturating_sub(n_min);
+            if removable == 0 {
+                continue;
             }
+
+            let removed = AtomicUsize::new(0);
+            pool.retain(|pr, metrics| {
+                let expired = metrics.last_used() >= max_age;
+                if expired && removed.load(Ordering::Relaxed) < removable {
+                    removed.fetch_add(1, Ordering::Relaxed);
+                    println!("Killing plumber API at {}:{}", pr.host, pr.port);
+                    false
+                } else {
+                    true
+                }
+            });
         }
     });
 
