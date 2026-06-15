@@ -1,5 +1,10 @@
 # valve 0.1.4
 
+* Lower request latency. `TCP_NODELAY` is now enabled on both the client-facing
+  server connections and the upstream proxy connections, disabling Nagle's
+  algorithm. Without it, small proxied reads/writes on reused keep-alive
+  connections could stall on the peer's delayed-ACK timer, adding tens to
+  hundreds of milliseconds per request.
 * Valve no longer panics its Tokio runtime worker threads when a pooled plumber
   worker is dead or not yet accepting connections. Previously, under concurrent
   load exceeding the number of ready workers, requests could stall (~2s) and

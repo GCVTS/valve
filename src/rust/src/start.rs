@@ -32,8 +32,13 @@ pub async fn valve_start(
     let axum_host = Arc::new(host);
     let axum_port = port;
 
-    // spawn client used for proxying
-    let c = Client::new();
+    // spawn client used for proxying. Disable Nagle's algorithm (TCP_NODELAY)
+    // on the upstream connections: without it, small proxied writes on a reused
+    // keep-alive connection stall on the peer's delayed-ACK, adding tens to
+    // hundreds of milliseconds of latency per request.
+    let mut connector = HttpConnector::new();
+    connector.set_nodelay(true);
+    let c: Client = hyper::client::Client::builder().build(connector);
 
     // create Pool manager
     let plumber_manager = PrManager {
@@ -108,10 +113,14 @@ pub async fn valve_start(
         }
     });
 
-    // Start the Axum server
+    // Start the Axum server. `tcp_nodelay(true)` disables Nagle's algorithm on
+    // the incoming (client-facing) connections for the same reason as the proxy
+    // client above -- otherwise responses on a reused keep-alive connection are
+    // delayed by the client's delayed-ACK timer.
     let full_axum_host = format!("{axum_host}:{axum_port}");
     axum::Server::try_bind(&full_axum_host.as_str().parse().unwrap())
         .unwrap()
+        .tcp_nodelay(true)
         .serve(app.into_make_service())
         .await
         .unwrap();
