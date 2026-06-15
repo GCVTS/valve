@@ -47,11 +47,12 @@ impl Plumber {
     }
 
     pub fn is_alive(&mut self) -> bool {
-        let status = self.process.try_wait();
-        match status {
-            Ok(Some(_)) => true,
-            Ok(None) => false,
-            Err(_) => false,
+        // `try_wait` reports `Ok(Some(_))` once the child has exited and
+        // `Ok(None)` while it is still running.
+        match self.process.try_wait() {
+            Ok(Some(_)) => false, // process has exited -> not alive
+            Ok(None) => true,     // still running -> alive
+            Err(_) => false,      // status unavailable -> treat as not alive
         }
     }
 
