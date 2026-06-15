@@ -297,8 +297,11 @@ mod kill_on_close {
 // spawn plumber
 use std::process::Child;
 pub fn spawn_plumber(host: &str, port: u16, filepath: &str) -> Child {
-    // start the R processes
-    let mut command = Command::new("R");
+    // Use `Rscript`, not `R`. On Windows `R -e` is a launcher that spawns
+    // `R.exe -> cmd.exe -> Rterm.exe`, so valve would track the launcher rather
+    // than the engine running plumber (leaking the real process on shutdown).
+    // `Rscript -e` runs the engine as a single process we can track directly.
+    let mut command = Command::new("Rscript");
     command
         .arg("-e")
         // the defines the R command that is used to start plumber

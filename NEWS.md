@@ -1,5 +1,10 @@
 # valve 0.1.4
 
+* Workers are spawned with `Rscript` instead of `R`. On Windows `R -e` launches
+  a three-process chain (`R.exe` -> `cmd.exe` -> `Rterm.exe`) per worker, so
+  valve tracked the launcher rather than the engine actually running plumber.
+  `Rscript -e` runs the engine as a single process, cutting two processes per
+  worker and letting shutdown/cleanup act directly on the real process.
 * Lower request latency. `TCP_NODELAY` is now enabled on both the client-facing
   server connections and the upstream proxy connections, disabling Nagle's
   algorithm. Without it, small proxied reads/writes on reused keep-alive
