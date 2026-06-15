@@ -13,8 +13,6 @@ use std::{net::TcpListener, sync::Arc};
 use deadpool::managed;
 type Pool = managed::Pool<PrManager>;
 
-
-
 pub async fn valve_start(
     filepath: String,
     host: String,
@@ -24,7 +22,6 @@ pub async fn valve_start(
     check_interval: i32,
     max_age: i32,
 ) {
-
     // determines how often to check connects
     let interval = Duration::from_secs(check_interval.try_into().unwrap());
     // determines how old a connection can be before being killed
@@ -40,7 +37,7 @@ pub async fn valve_start(
     // create Pool manager
     let plumber_manager = PrManager {
         host: axum_host.to_string(),
-        pr_file: filepath.to_string()
+        pr_file: filepath.to_string(),
     };
 
     // Build the Plumber API connection Pool
@@ -49,10 +46,8 @@ pub async fn valve_start(
         .build()
         .unwrap();
 
-
     // spawn the first connection before we create the app
     let _ = pool.get().await.unwrap();
-
 
     // define the APP
     let app = axum::Router::new()
@@ -60,8 +55,6 @@ pub async fn valve_start(
         .route("/*key", axum::routing::any(plumber_handler))
         .with_state(c)
         .layer(Extension(pool.clone()));
-
-
 
     // This thread is used to check if there are expired threads
     tokio::spawn(async move {
@@ -80,7 +73,7 @@ pub async fn valve_start(
 
                     keep
                 });
-            } 
+            }
         }
     });
 

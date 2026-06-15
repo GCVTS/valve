@@ -1,3 +1,17 @@
+# valve 0.1.4
+
+* Valve no longer panics its Tokio runtime worker threads when a pooled plumber
+  worker is dead or not yet accepting connections. Previously, under concurrent
+  load exceeding the number of ready workers, requests could stall (~2s) and
+  return empty/dropped replies as runtime threads were killed.
+  - Proxying now buffers the request body and performs a bounded retry, falling
+    back to a clean `502 Bad Gateway` instead of unwrapping the transport error.
+  - The connection pool now health-checks workers on checkout (`recycle`) with a
+    short TCP liveness probe, so dead workers are evicted and respawned instead
+    of being handed back out. The pool self-heals after a worker dies.
+  - Failing to acquire a worker from the pool now returns `502` rather than
+    panicking the request handler.
+
 # valve 0.1.2.9000
 
 
