@@ -36,6 +36,7 @@ impl Drop for Plumber {
         // `Manager::detach` on *some* of those paths (notably not on
         // `Pool::close`/`resize` or when the pool is dropped), so relying on it
         // alone would orphan R processes.
+        println!("Terminating plumber worker {}:{}", self.host, self.port);
         let _ = self.process.kill();
         // Reap so we don't leave a zombie (Unix) or a dangling handle.
         let _ = self.process.wait();
@@ -47,12 +48,14 @@ impl Plumber {
     pub fn spawn(host: &str, filepath: &str) -> Self {
         let port = generate_random_port(host);
 
-        #[cfg(debug_assertions)]
-        println!("about to spawn plumber");
+        // Log the attempt *before* spawning so a worker's lifecycle reads in
+        // order: this "Spawning" line, then a readiness or failure line from
+        // `spawn_plumber`, and later an eviction/termination line if it is
+        // removed. (If "Spawning" is not followed by either, the worker hung
+        // during startup.)
+        println!("Spawning plumber API at {host}:{port}");
 
         let process = spawn_plumber(host, port, filepath);
-
-        println!("Spawning plumber API at {host}:{port}");
 
         Self {
             host: host.to_string(),
@@ -216,14 +219,26 @@ impl managed::Manager for PrManager {
 
         match probe {
             Ok(Ok(_stream)) => Ok(()),
-            Ok(Err(e)) => Err(managed::RecycleError::Message(format!(
-                "plumber worker {}:{} not reachable: {e}",
-                conn.host, conn.port
-            ))),
-            Err(_elapsed) => Err(managed::RecycleError::Message(format!(
-                "plumber worker {}:{} health check timed out",
-                conn.host, conn.port
-            ))),
+            Ok(Err(e)) => {
+                eprintln!(
+                    "valve: worker {}:{} failed health check, evicting: {e}",
+                    conn.host, conn.port
+                );
+                Err(managed::RecycleError::Message(format!(
+                    "plumber worker {}:{} not reachable: {e}",
+                    conn.host, conn.port
+                )))
+            }
+            Err(_elapsed) => {
+                eprintln!(
+                    "valve: worker {}:{} health check timed out, evicting",
+                    conn.host, conn.port
+                );
+                Err(managed::RecycleError::Message(format!(
+                    "plumber worker {}:{} health check timed out",
+                    conn.host, conn.port
+                )))
+            }
         }
     }
 
@@ -339,16 +354,58 @@ pub fn spawn_plumber(host: &str, port: u16, filepath: &str) -> Child {
     #[cfg(debug_assertions)]
     println!("theoretically have spawned plumber");
 
-    // capture stderr
-    let stderr = pr_child.stderr.take().expect("stdout to be read");
-    let reader = BufReader::new(stderr);
+    // Continuously forward this worker's stdout and stderr to valve's log for
+    // the worker's ENTIRE lifetime, each line tagged with its host:port. This
+    // surfaces everything the worker prints -- startup messages, handled
+    // errors/warnings, and whatever it logs right before it dies -- so a worker
+    // that was "Spawning"-logged but never serves can be diagnosed. Two reader
+    // threads drain the pipes (also avoiding a stdout pipe-buffer deadlock) and
+    // end on their own when the worker exits and closes the pipes. The stderr
+    // reader additionally signals readiness when plumber reports it is serving.
+    let stdout = pr_child.stdout.take().expect("worker stdout to be piped");
+    let stderr = pr_child.stderr.take().expect("worker stderr to be piped");
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
 
-    // read lines from buffer. when "Running swagger" is captured
-    // then we sleep for 1/10th of a second to let the api start and continue
-    for line in reader.lines().map_while(Result::ok) {
-        if line.contains("Running swagger") || line.contains("Running rapidoc") {
+    {
+        let tag = format!("{host}:{port}");
+        std::thread::spawn(move || {
+            let mut signalled = false;
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                eprintln!("[{tag}] {line}");
+                if !signalled
+                    && (line.contains("Running swagger") || line.contains("Running rapidoc"))
+                {
+                    let _ = ready_tx.send(());
+                    signalled = true;
+                }
+            }
+            eprintln!("[{tag}] worker stderr closed (process exited)");
+        });
+    }
+    {
+        let tag = format!("{host}:{port}");
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                println!("[{tag}] {line}");
+            }
+        });
+    }
+
+    // Wait (bounded) for the worker to report it is serving before adding it to
+    // the pool. `recv` returns an error immediately if the worker exits before
+    // signalling (the sender is dropped), and after 30s if it just hangs; in
+    // either case we return the worker anyway and let the pool's health check
+    // evict it if it is not actually reachable.
+    match ready_rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(()) => {
             std::thread::sleep(Duration::from_millis(100));
-            break;
+            println!("plumber worker {host}:{port} is ready");
+        }
+        Err(_) => {
+            eprintln!(
+                "valve: plumber worker {host}:{port} never signalled readiness \
+                 (exited or hung during startup); see the [{host}:{port}] lines for why"
+            );
         }
     }
 

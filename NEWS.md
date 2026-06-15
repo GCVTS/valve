@@ -1,5 +1,13 @@
 # valve 0.1.4
 
+* Worker output and lifecycle are now logged. Each worker's stdout and stderr
+  are forwarded to valve's log for the worker's whole lifetime, every line
+  tagged with its `host:port`, so handled errors and the reason a worker exits
+  are visible (previously the worker's stderr was read only until startup and
+  then discarded). Lifecycle events are logged too: the spawn attempt, becoming
+  ready, failing/timing out before readiness, health-check eviction, and
+  termination. (Note: this forwards everything a worker prints, including
+  plumber's per-request log lines, so it can be verbose under load.)
 * Workers are spawned with `Rscript` instead of `R`. On Windows `R -e` launches
   a three-process chain (`R.exe` -> `cmd.exe` -> `Rterm.exe`) per worker, so
   valve tracked the launcher rather than the engine actually running plumber.
