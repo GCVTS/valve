@@ -15,11 +15,13 @@
   lives in a `Drop` implementation, so the underlying R process is terminated on
   every path that removes a worker — eviction, pruning, pool resize, and pool
   shutdown — not only the few paths where `deadpool` calls `detach`.
-* `n_min` is now respected as a hard floor during pruning. Previously the idle
-  prune removed every expired worker in a single pass once the pool was larger
-  than `n_min`, so a quiet pool could be pruned all the way to zero. Pruning now
-  removes at most `size - n_min` workers per pass, so once the pool has scaled up
-  to `n_min` it never drops below it.
+* `n_min` is now honored from startup and as a hard floor. Valve pre-warms the
+  pool to `n_min` live workers before it starts accepting requests (previously
+  only a single worker was spawned at boot and the rest scaled up on demand).
+  Pruning also now removes at most `size - n_min` workers per pass; previously
+  the idle prune removed every expired worker in a single pass once the pool was
+  larger than `n_min`, so a quiet pool could be pruned all the way to zero. The
+  worker count never drops below `n_min`.
 
 # valve 0.1.2.9000
 
