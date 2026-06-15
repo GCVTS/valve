@@ -132,7 +132,16 @@ pub async fn valve_start(
 pub fn generate_random_port(host: &str) -> u16 {
     let mut rng = rand::thread_rng();
     loop {
-        let port: u16 = rng.gen_range(1024..=65535);
+        // Pick from 20000..=30000. Two constraints shape this window:
+        //   * httpuv (plumber's server) only accepts 1024..=49151, rejecting the
+        //     IANA dynamic/private range (49152..=65535).
+        //   * The OS auto-assigns *outbound* connections from an ephemeral range
+        //     (Linux 32768..=60999, Windows 49152..=65535); valve opens many such
+        //     connections (proxying + health checks), so binding worker listeners
+        //     there would race the kernel for the same ports.
+        // 20000..=30000 sits above the densely-used low service ports and below
+        // both ephemeral floors, on every platform, with ample room for the pool.
+        let port: u16 = rng.gen_range(20000..=30000);
         if is_port_available(host, port) {
             return port;
         }

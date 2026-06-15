@@ -1,5 +1,14 @@
 # valve 0.1.4
 
+* Workers no longer fail to start on randomly chosen ports. Ports are now drawn
+  from 20000-30000 (was 1024-65535). httpuv (plumber's server) rejects ports in
+  the IANA dynamic range (49152-65535) with "Port must be an integer in the
+  range 1024 to 49151", so roughly a quarter of spawned workers used to die
+  immediately at startup with that error. The narrower 20000-30000 window also
+  stays clear of common service ports and, importantly, of the OS ephemeral
+  range used for outbound connections (Linux 32768-60999, Windows 49152-65535),
+  which valve's own proxy/health-check connections draw from -- avoiding bind
+  races with the kernel.
 * Worker output and lifecycle are now logged. Each worker's stdout and stderr
   are forwarded to valve's log for the worker's whole lifetime, every line
   tagged with its `host:port`, so handled errors and the reason a worker exits
