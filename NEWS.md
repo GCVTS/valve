@@ -15,6 +15,12 @@
   lives in a `Drop` implementation, so the underlying R process is terminated on
   every path that removes a worker — eviction, pruning, pool resize, and pool
   shutdown — not only the few paths where `deadpool` calls `detach`.
+* Worker processes are now cleaned up even when valve is *force-killed* (where no
+  Rust destructor runs). On Windows each worker is enrolled in a kill-on-close
+  Job Object, so the OS terminates them when the valve process dies by any means
+  (including `TerminateProcess`). On Linux each worker arms `PR_SET_PDEATHSIG`
+  (`SIGKILL`) so the kernel kills it if valve exits. (macOS still relies on the
+  graceful `Drop` cleanup.)
 * `n_min` is now honored from startup and as a hard floor. Valve pre-warms the
   pool to `n_min` live workers before it starts accepting requests (previously
   only a single worker was spawned at boot and the rest scaled up on demand).

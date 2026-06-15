@@ -233,11 +233,73 @@ impl managed::Manager for PrManager {
     // the pool on shutdown).
 }
 
+// On Windows, `Drop` does not run when valve is force-killed (e.g.
+// `TerminateProcess` / Task Manager), so we tie each spawned worker to a Job
+// Object configured to kill its members when the job's last handle closes. The
+// OS closes that handle when valve dies by any means, then terminates every
+// worker -- no orphaned R processes.
+#[cfg(windows)]
+mod kill_on_close {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    // `HANDLE` is a plain `isize`; wrap it so it can live in a `static`.
+    struct Job(HANDLE);
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
+
+    // Create (once) a kill-on-close Job Object. We deliberately never close this
+    // handle: keeping it open for valve's lifetime means the OS closes it only
+    // when valve itself dies, which is exactly when we want the workers killed.
+    fn job() -> Option<HANDLE> {
+        JOB.get_or_init(|| unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if handle == 0 {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of!(info).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if ok == 0 {
+                return None;
+            }
+            Some(Job(handle))
+        })
+        .as_ref()
+        .map(|j| j.0)
+    }
+
+    // Best-effort: if the job can't be created/configured or assignment fails
+    // (e.g. an old Windows without nested-job support), we fall back to `Drop`.
+    pub fn assign(child: &Child) {
+        if let Some(job) = job() {
+            unsafe {
+                AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE);
+            }
+        }
+    }
+}
+
 // spawn plumber
 use std::process::Child;
 pub fn spawn_plumber(host: &str, port: u16, filepath: &str) -> Child {
     // start the R processes
-    let mut pr_child = Command::new("R")
+    let mut command = Command::new("R");
+    command
         .arg("-e")
         // the defines the R command that is used to start plumber
         .arg(format!(
@@ -245,9 +307,31 @@ pub fn spawn_plumber(host: &str, port: u16, filepath: &str) -> Child {
         ))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Failed to start R process");
+        .stderr(Stdio::piped());
+
+    // On Linux, ask the kernel to SIGKILL this worker if valve dies, so workers
+    // aren't orphaned even when valve is force-killed (SIGKILL skips `Drop`).
+    #[cfg(target_os = "linux")]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Guard the fork->prctl window: if valve already exited, this child
+            // was reparented to init -- don't linger, exit immediately.
+            if libc::getppid() == 1 {
+                libc::raise(libc::SIGKILL);
+            }
+            Ok(())
+        });
+    }
+
+    let mut pr_child = command.spawn().expect("Failed to start R process");
+
+    // On Windows, enroll the worker in the kill-on-close Job Object.
+    #[cfg(windows)]
+    kill_on_close::assign(&pr_child);
 
     #[cfg(debug_assertions)]
     println!("theoretically have spawned plumber");
