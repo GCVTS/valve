@@ -64,12 +64,18 @@ fn main() {
         panic!("Cannot have fewer than 1 worker thread")
     }
 
-    // verify that R is installed will panic if R isn't found (i hope)
-    std::process::Command::new("R")
+    // verify that Rscript is installed (workers are spawned with Rscript).
+    // `.status()` waits for the check process so it isn't left as a zombie.
+    let rscript_ok = std::process::Command::new("Rscript")
         .arg("--version")
         .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !rscript_ok {
+        panic!("Rscript was not found on PATH; is R installed?")
+    }
 
     // verify that the plumber pcackage can be found
     let plumber_exists = std::process::Command::new("Rscript")
